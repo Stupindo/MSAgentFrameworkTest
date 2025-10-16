@@ -1,36 +1,105 @@
-﻿// See https://aka.ms/new-console-template for more information
-
-
-using Microsoft.Extensions.AI;
+using HelloWorldAgents.Agents;
 using Microsoft.Agents.AI;
-using OpenAI;
-using OpenAI.Chat;
-using System.ClientModel;
 
-string? githubToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+string? configurationPath = Environment.GetEnvironmentVariable("AGENT_CONFIG_PATH");
+configurationPath = string.IsNullOrWhiteSpace(configurationPath)
+    ? Path.Combine(AppContext.BaseDirectory, "agents.json")
+    : configurationPath;
 
-if (string.IsNullOrEmpty(githubToken))
+AgentConfiguration configuration;
+try
 {
-    Console.WriteLine("Error: The GITHUB_TOKEN environment variable is not set.");
-    Console.WriteLine("Please set the variable and restart your terminal/IDE.");
-    return; // Exit the application
+    configuration = AgentConfigurationLoader.Load(configurationPath);
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"Failed to load agent configuration from '{configurationPath}': {ex.Message}");
+    return;
 }
 
-IChatClient chatClient =
-    new ChatClient(
-            "gpt-4o-mini",
-            new ApiKeyCredential(githubToken),
-            new OpenAIClientOptions { Endpoint = new Uri("https://models.github.ai/inference") })
-        .AsIChatClient();
+if (configuration.Agents.Count == 0)
+{
+    Console.WriteLine("No agents are defined in the configuration.");
+    return;
+}
 
-AIAgent writer = new ChatClientAgent(
-    chatClient,
-    new ChatClientAgentOptions
+var agentFactory = AgentFactory.CreateDefault();
+var agents = new Dictionary<string, AIAgent>(StringComparer.OrdinalIgnoreCase);
+
+foreach ((string name, AgentDefinition definition) in configuration.Agents)
+{
+    try
     {
-        Name = "Writer",
-        Instructions = "Write stories that are engaging and creative."
-    });
+        agents[name] = agentFactory.CreateAgent(name, definition);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Failed to initialize agent '{name}': {ex.Message}");
+    }
+}
 
-AgentRunResponse response = await writer.RunAsync("Write a short story about a haunted house.");
+if (!agents.TryGetValue(configuration.PrimaryAgent, out AIAgent? primaryAgent))
+{
+    Console.WriteLine(
+        $"The configured primary agent '{configuration.PrimaryAgent}' could not be created. Check the provider and API key settings.");
+    return;
+}
 
-Console.WriteLine(response.Text);
+string prompt = args.Length > 0 ? string.Join(' ', args) : configuration.InitialPrompt;
+if (string.IsNullOrWhiteSpace(prompt))
+{
+    Console.WriteLine("No prompt was supplied. Provide one via the command line or update the configuration file.");
+    return;
+}
+
+configuration.Agents.TryGetValue(configuration.PrimaryAgent, out AgentDefinition? primaryDefinition);
+string primaryProvider = primaryDefinition?.Provider ?? "unknown";
+
+Console.WriteLine($"Running agent '{configuration.PrimaryAgent}' using provider '{primaryProvider}'.");
+
+AgentRunResponse response;
+try
+{
+    response = await primaryAgent.RunAsync(prompt);
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"The primary agent run failed: {ex.Message}");
+    return;
+}
+
+string currentOutput = response.Text ?? string.Empty;
+Console.WriteLine($"\n[{configuration.PrimaryAgent}]\n{currentOutput}\n");
+
+if (configuration.Injections.Count > 0)
+{
+    foreach (AgentInjection injection in configuration.Injections)
+    {
+        if (!agents.TryGetValue(injection.Agent, out AIAgent? agent))
+        {
+            Console.WriteLine($"Skipping injection for unknown agent '{injection.Agent}'.");
+            continue;
+        }
+
+        string injectionPrompt = injection.BuildPrompt(currentOutput);
+
+        configuration.Agents.TryGetValue(injection.Agent, out AgentDefinition? injectionDefinition);
+        string injectionProvider = injectionDefinition?.Provider ?? "unknown";
+
+        Console.WriteLine($"Running agent '{injection.Agent}' using provider '{injectionProvider}'.");
+
+        AgentRunResponse injectionResponse;
+        try
+        {
+            injectionResponse = await agent.RunAsync(injectionPrompt);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Agent '{injection.Agent}' failed: {ex.Message}");
+            continue;
+        }
+
+        currentOutput = injectionResponse.Text ?? string.Empty;
+        Console.WriteLine($"\n[{injection.Agent}]\n{currentOutput}\n");
+    }
+}
