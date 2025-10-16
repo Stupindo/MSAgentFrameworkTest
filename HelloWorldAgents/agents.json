@@ -1,0 +1,24 @@
+{
+  "primaryAgent": "writer",
+  "initialPrompt": "Write a short story about a haunted house.",
+  "agents": {
+    "writer": {
+      "provider": "github",
+      "model": "gpt-4o-mini",
+      "apiKeyEnvironmentVariable": "GITHUB_TOKEN",
+      "instructions": "Write stories that are engaging and creative."
+    },
+    "editor": {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "apiKeyEnvironmentVariable": "OPENAI_API_KEY",
+      "instructions": "Provide helpful editorial feedback while keeping the original tone intact."
+    }
+  },
+  "injections": [
+    {
+      "agent": "editor",
+      "promptTemplate": "Offer concise feedback for the following story so the writer can improve it:\n{output}"
+    }
+  ]
+}
